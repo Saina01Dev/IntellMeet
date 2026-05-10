@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { createMeeting, getMeetings, generateMeetingSummary } from "../services/meetingService";
 import { logout } from "../services/authService";
+import { createMeeting, generateMeetingSummary, getMeetings } from "../services/meetingService";
 
 const Dashboard = () => {
     const [meetings, setMeetings] = useState([]);
@@ -187,7 +187,7 @@ const Dashboard = () => {
                             </svg>
                         </button>
                         <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
-                            <span style={css.welcomeText}>WELCOME BACK</span>
+                            <span style={css.welcomeText}>WELCOME BACK BOSS</span>
                             <h2 style={css.headerTitle}>{user.name || "User Dashboard"}</h2>
                         </div>
                     </div>
