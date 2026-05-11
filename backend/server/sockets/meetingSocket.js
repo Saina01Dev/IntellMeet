@@ -66,6 +66,13 @@ export const initializeSocket = (io) => {
             socket.to(data.roomId).emit("user-typing", data);
         });
 
+        socket.on("media-state-change", (data) => {
+            socket.to(data.roomId).emit("user-media-state", {
+                socketId: socket.id,
+                isCameraOff: data.isCameraOff,
+                isMuted: data.isMuted
+            });
+        });
 
         socket.on("disconnect", () => {
             console.log("User disconnected:", socket.id);

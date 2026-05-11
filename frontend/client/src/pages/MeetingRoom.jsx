@@ -1,9 +1,10 @@
-import { useEffect, useState, useRef } from "react";
+import EmojiPicker from 'emoji-picker-react';
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { socket } from "../services/socket";
 import VideoPlayer from "../components/VideoPlayer";
-import { peerConfig } from "../services/webrtc";
 import { getCurrentUser } from "../services/authService";
+import { socket } from "../services/socket";
+import { peerConfig } from "../services/webrtc";
 
 
 const avatarColors = [
@@ -155,19 +156,29 @@ const MeetingRoom = () => {
     const [messages, setMessages] = useState([]);
     const [typing, setTyping] = useState("");
     const [localStream, setLocalStream] = useState(null);
-    const [remoteStream, setRemoteStream] = useState(null);
-    const [remoteUserName, setRemoteUserName] = useState("");
+    const [remoteParticipants, setRemoteParticipants] = useState({}); // socketId -> { stream, userName, isCameraOff, isMuted }
     const [isMuted, setIsMuted] = useState(false);
     const [isCameraOff, setIsCameraOff] = useState(false);
     const [isScreenSharing, setIsScreenSharing] = useState(false);
     const [mediaError, setMediaError] = useState("");
+    const [showEmoji, setShowEmoji] = useState(false);
+    const [toasts, setToasts] = useState([]);
+    const [activeTab, setActiveTab] = useState("chat");
+
+    const addToast = (msg) => {
+        const id = Date.now();
+        setToasts(prev => [...prev, { id, msg }]);
+        setTimeout(() => {
+            setToasts(prev => prev.filter(t => t.id !== id));
+        }, 3000);
+    };
 
     const typingTimeoutRef = useRef(null);
     const messagesEndRef = useRef(null);
     const inputRef = useRef(null);
-    const peerRef = useRef(null);
+    const peersRef = useRef({}); // socketId -> RTCPeerConnection
     const localStreamRef = useRef(null);
-    const pendingCandidatesRef = useRef([]);
+    const pendingCandidatesRef = useRef({}); // socketId -> [candidates]
     const joinedRef = useRef(false);
 
 
@@ -192,8 +203,12 @@ const MeetingRoom = () => {
 
     useEffect(() => {
         return () => {
-            localStreamRef.current?.getTracks().forEach((t) => t.stop());
-            peerRef.current?.close();
+            console.log("[Meeting] Component unmounting, cleaning up...");
+            if (localStreamRef.current) {
+                localStreamRef.current.getTracks().forEach((t) => t.stop());
+            }
+            Object.values(peersRef.current).forEach(peer => peer.close());
+            peersRef.current = {};
         };
     }, []);
 
@@ -239,112 +254,191 @@ const MeetingRoom = () => {
 
 
     useEffect(() => {
-        socket.on("user-left", ({ socketId }) => {
-            console.log(`[Meeting] User left: ${socketId}`);
-            peerRef.current?.close();
-            peerRef.current = null;
-            setRemoteStream(null);
-            setRemoteUserName("");
-        });
-        return () => socket.off("user-left");
-    }, []);
-
-
-    useEffect(() => {
-        socket.on("user-joined", async ({ socketId, userName }) => {
-            console.log(`[Meeting] User joined: "${userName}" (${socketId})`);
-
-            setRemoteUserName(userName || "Participant");
+        const createPeer = (targetSocketId, userName) => {
+            console.log(`[WebRTC] Creating peer connection for ${targetSocketId} (${userName})`);
             const peer = new RTCPeerConnection(peerConfig);
-            peerRef.current = peer;
-            localStreamRef.current?.getTracks().forEach((t) => peer.addTrack(t, localStreamRef.current));
-            peer.ontrack = (e) => {
-                console.log("Received remote track:", e.track.kind);
-                setRemoteStream(new MediaStream(e.streams[0].getTracks()));
-            };
-            peer.onicecandidate = (e) => {
-                if (e.candidate) {
-                    console.log("Sending ICE candidate to", socketId);
-                    socket.emit("ice-candidate", { candidate: e.candidate, to: socketId });
+            peersRef.current[targetSocketId] = peer;
+
+            peer.oniceconnectionstatechange = () => {
+                console.log(`[WebRTC] ICE Connection State for ${targetSocketId}:`, peer.iceConnectionState);
+                if (peer.iceConnectionState === "disconnected" || peer.iceConnectionState === "failed") {
+                    handleUserLeft({ socketId: targetSocketId });
                 }
             };
+
+            peer.onsignalingstatechange = () => {
+                console.log(`[WebRTC] Signaling State for ${targetSocketId}:`, peer.signalingState);
+            };
+
+            if (localStreamRef.current) {
+                localStreamRef.current.getTracks().forEach((t) => {
+                    console.log(`[WebRTC] Adding local track (${t.kind}) to peer ${targetSocketId}`);
+                    peer.addTrack(t, localStreamRef.current);
+                });
+            }
+
+            peer.ontrack = (e) => {
+                console.log(`[WebRTC] Received remote track (${e.track.kind}) from ${targetSocketId}`);
+                const stream = e.streams && e.streams[0] ? e.streams[0] : new MediaStream([e.track]);
+                
+                setRemoteParticipants(prev => ({
+                    ...prev,
+                    [targetSocketId]: {
+                        ...prev[targetSocketId],
+                        stream,
+                        userName: userName || prev[targetSocketId]?.userName || "Participant"
+                    }
+                }));
+            };
+
+            peer.onicecandidate = (e) => {
+                if (e.candidate) {
+                    console.log("[WebRTC] Sending ICE candidate to", targetSocketId);
+                    socket.emit("ice-candidate", { candidate: e.candidate, to: targetSocketId });
+                }
+            };
+
+            return peer;
+        };
+
+        const handleUserJoined = async ({ socketId, userName }) => {
+            console.log(`[Meeting] User joined: "${userName}" (${socketId})`);
+            addToast(`${userName || "A participant"} joined the meeting`);
+            
+            setRemoteParticipants(prev => ({
+                ...prev,
+                [socketId]: { userName, stream: null }
+            }));
+
+            const peer = createPeer(socketId, userName);
             const offer = await peer.createOffer();
             await peer.setLocalDescription(offer);
-            console.log("Sending offer to", socketId);
-            socket.emit("offer", { offer, to: socketId });
-        });
-        return () => socket.off("user-joined");
-    }, []);
+            console.log("[WebRTC] Sending offer to", socketId);
+            socket.emit("offer", { offer, to: socketId, userName: myName });
+        };
 
-
-    useEffect(() => {
-        socket.on("offer", async ({ offer, from }) => {
-            const peer = new RTCPeerConnection(peerConfig);
-            peerRef.current = peer;
-            localStreamRef.current?.getTracks().forEach((t) => peer.addTrack(t, localStreamRef.current));
-            peer.ontrack = (e) => {
-                console.log("Received remote track:", e.track.kind);
-                setRemoteStream(new MediaStream(e.streams[0].getTracks()));
-            };
-            peer.onicecandidate = (e) => {
-                if (e.candidate) {
-                    console.log("Sending ICE candidate to", from);
-                    socket.emit("ice-candidate", { candidate: e.candidate, to: from });
-                }
-            };
-            await peer.setRemoteDescription(new RTCSessionDescription(offer));
-            const answer = await peer.createAnswer();
-            await peer.setLocalDescription(answer);
-            console.log("Sending answer to", from);
-            socket.emit("answer", { answer, to: from });
-
-
-            if (pendingCandidatesRef.current.length > 0) {
-                console.log("Processing", pendingCandidatesRef.current.length, "pending candidates");
-                pendingCandidatesRef.current.forEach((candidate) => {
-                    peer.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => console.error("Error adding pending candidate", e));
-                });
-                pendingCandidatesRef.current = [];
+        const handleOffer = async ({ offer, from, userName }) => {
+            console.log("[WebRTC] Received offer from", from);
+            
+            let peer = peersRef.current[from];
+            if (!peer) {
+                peer = createPeer(from, userName);
+                setRemoteParticipants(prev => ({
+                    ...prev,
+                    [from]: { userName: userName || "Participant", stream: null }
+                }));
             }
-        });
-        return () => socket.off("offer");
-    }, []);
 
+            try {
+                await peer.setRemoteDescription(new RTCSessionDescription(offer));
+                const answer = await peer.createAnswer();
+                await peer.setLocalDescription(answer);
+                console.log("[WebRTC] Sending answer to", from);
+                socket.emit("answer", { answer, to: from, userName: myName });
 
-    useEffect(() => {
-        socket.on("answer", async ({ answer }) => {
-            if (peerRef.current) {
-                console.log("Received answer, setting remote description");
-                await peerRef.current.setRemoteDescription(new RTCSessionDescription(answer));
-
-
-                if (pendingCandidatesRef.current.length > 0) {
-                    console.log("Processing", pendingCandidatesRef.current.length, "pending candidates after answer");
-                    pendingCandidatesRef.current.forEach((candidate) => {
-                        peerRef.current.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => console.error("Error adding pending candidate", e));
+                // Process queued candidates
+                if (pendingCandidatesRef.current[from]) {
+                    console.log(`[WebRTC] Processing queued candidates for ${from}`);
+                    pendingCandidatesRef.current[from].forEach(async (candidate) => {
+                        await peer.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => console.error("Error adding queued candidate", e));
                     });
-                    pendingCandidatesRef.current = [];
+                    delete pendingCandidatesRef.current[from];
+                }
+            } catch (err) {
+                console.error("[WebRTC] Error handling offer:", err);
+            }
+        };
+
+        const handleAnswer = async ({ answer, from, userName }) => {
+            console.log("[WebRTC] Received answer from", from);
+            const peer = peersRef.current[from];
+            if (peer) {
+                try {
+                    setRemoteParticipants(prev => ({
+                        ...prev,
+                        [from]: {
+                            ...prev[from],
+                            userName: userName || prev[from]?.userName || "Participant"
+                        }
+                    }));
+                    await peer.setRemoteDescription(new RTCSessionDescription(answer));
+                    
+                    // Process queued candidates
+                    if (pendingCandidatesRef.current[from]) {
+                        console.log(`[WebRTC] Processing queued candidates for ${from}`);
+                        pendingCandidatesRef.current[from].forEach(async (candidate) => {
+                            await peer.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => console.error("Error adding queued candidate", e));
+                        });
+                        delete pendingCandidatesRef.current[from];
+                    }
+                } catch (err) {
+                    console.error("[WebRTC] Error handling answer:", err);
                 }
             }
-        });
-        return () => socket.off("answer");
-    }, []);
+        };
 
-    useEffect(() => {
-        socket.on("ice-candidate", async ({ candidate }) => {
-            if (peerRef.current && peerRef.current.remoteDescription) {
+        const handleIceCandidate = async ({ candidate, from }) => {
+            const peer = peersRef.current[from];
+            if (peer && peer.remoteDescription) {
                 try {
-                    await peerRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+                    await peer.addIceCandidate(new RTCIceCandidate(candidate));
                 } catch (e) {
-                    console.error("Error adding ICE candidate", e);
+                    console.error("[WebRTC] Error adding ICE candidate", e);
                 }
             } else {
-                console.log("Queuing ICE candidate (peer not ready)");
-                pendingCandidatesRef.current.push(candidate);
+                console.log(`[WebRTC] Queuing ICE candidate from ${from}`);
+                if (!pendingCandidatesRef.current[from]) pendingCandidatesRef.current[from] = [];
+                pendingCandidatesRef.current[from].push(candidate);
             }
-        });
-        return () => socket.off("ice-candidate");
-    }, []);
+        };
+
+        const handleUserLeft = ({ socketId }) => {
+            console.log(`[Meeting] User left: ${socketId}`);
+            if (peersRef.current[socketId]) {
+                peersRef.current[socketId].close();
+                delete peersRef.current[socketId];
+            }
+            setRemoteParticipants(prev => {
+                const updated = { ...prev };
+                const userName = updated[socketId]?.userName;
+                if (userName) addToast(`${userName} left the meeting`);
+                delete updated[socketId];
+                return updated;
+            });
+            delete pendingCandidatesRef.current[socketId];
+        };
+
+        const handleUserMediaState = ({ socketId, isCameraOff, isMuted }) => {
+            console.log(`[Meeting] Media state update from ${socketId}: camera=${isCameraOff}, muted=${isMuted}`);
+            setRemoteParticipants(prev => {
+                if (!prev[socketId]) return prev;
+                return {
+                    ...prev,
+                    [socketId]: {
+                        ...prev[socketId],
+                        isCameraOff,
+                        isMuted
+                    }
+                };
+            });
+        };
+
+        socket.on("user-joined", handleUserJoined);
+        socket.on("offer", handleOffer);
+        socket.on("answer", handleAnswer);
+        socket.on("ice-candidate", handleIceCandidate);
+        socket.on("user-left", handleUserLeft);
+        socket.on("user-media-state", handleUserMediaState);
+
+        return () => {
+            socket.off("user-joined", handleUserJoined);
+            socket.off("offer", handleOffer);
+            socket.off("answer", handleAnswer);
+            socket.off("ice-candidate", handleIceCandidate);
+            socket.off("user-left", handleUserLeft);
+            socket.off("user-media-state", handleUserMediaState);
+        };
+    }, [myName]);
 
 
     useEffect(() => {
@@ -362,31 +456,73 @@ const MeetingRoom = () => {
 
     const handleTyping = () => socket.emit("typing", { roomId, message: `${myName} is typing...` });
 
-    const toggleMute = () => {
-        const track = localStreamRef.current?.getAudioTracks()[0];
-        if (track) { track.enabled = !track.enabled; setIsMuted(!track.enabled); }
+    const toggleCamera = async () => {
+        if (!isCameraOff) {
+            console.log("[Media] Turning camera OFF");
+            const track = localStreamRef.current?.getVideoTracks()[0];
+            if (track) {
+                track.stop();
+            }
+            setIsCameraOff(true);
+            socket.emit("media-state-change", { roomId, isCameraOff: true, isMuted });
+        } else {
+            try {
+                console.log("[Media] Turning camera ON");
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                const newTrack = stream.getVideoTracks()[0];
+
+                const audioTracks = localStreamRef.current ? localStreamRef.current.getAudioTracks() : [];
+                const newStream = new MediaStream([newTrack, ...audioTracks]);
+
+                setLocalStream(newStream);
+                localStreamRef.current = newStream;
+
+                Object.values(peersRef.current).forEach(async (peer) => {
+                    const sender = peer.getSenders().find(s => s.track && s.track.kind === 'video');
+                    if (sender) {
+                        await sender.replaceTrack(newTrack);
+                    } else {
+                        peer.addTrack(newTrack, newStream);
+                    }
+                });
+
+                setIsCameraOff(false);
+                socket.emit("media-state-change", { roomId, isCameraOff: false, isMuted });
+            } catch (err) {
+                console.error("Could not restart camera", err);
+                addToast("Could not access camera");
+            }
+        }
     };
 
-    const toggleCamera = () => {
-        const track = localStreamRef.current?.getVideoTracks()[0];
-        if (track) { track.enabled = !track.enabled; setIsCameraOff(!track.enabled); }
+    const toggleMute = () => {
+        const track = localStreamRef.current?.getAudioTracks()[0];
+        if (track) {
+            track.enabled = !track.enabled;
+            setIsMuted(!track.enabled);
+            socket.emit("media-state-change", { roomId, isCameraOff, isMuted: !track.enabled });
+        }
     };
 
     const leaveRoom = () => {
-        localStreamRef.current?.getTracks().forEach((t) => t.stop());
-        peerRef.current?.close();
-        ["user-joined", "offer", "answer", "ice-candidate"].forEach((e) => socket.off(e));
-        setLocalStream(null);
-        setRemoteStream(null);
+        console.log("[Meeting] Leaving room...");
+        if (localStreamRef.current) {
+            localStreamRef.current.getTracks().forEach((t) => t.stop());
+        }
+        Object.values(peersRef.current).forEach(peer => peer.close());
         window.location.href = "/";
     };
 
     const startScreenShare = async () => {
         try {
+            console.log("[Media] Starting screen share");
             const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
             const screenTrack = screenStream.getVideoTracks()[0];
-            const sender = peerRef.current?.getSenders().find((s) => s.track?.kind === "video");
-            if (sender) await sender.replaceTrack(screenTrack);
+
+            Object.values(peersRef.current).forEach(async (peer) => {
+                const sender = peer.getSenders().find((s) => s.track?.kind === "video");
+                if (sender) await sender.replaceTrack(screenTrack);
+            });
 
             const updatedStream = new MediaStream([
                 screenTrack,
@@ -402,9 +538,13 @@ const MeetingRoom = () => {
     };
 
     const stopScreenShare = async () => {
+        console.log("[Media] Stopping screen share");
         const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
-        const sender = peerRef.current?.getSenders().find((s) => s.track?.kind === "video");
-        if (sender && cameraTrack) await sender.replaceTrack(cameraTrack);
+        
+        Object.values(peersRef.current).forEach(async (peer) => {
+            const sender = peer.getSenders().find((s) => s.track?.kind === "video");
+            if (sender && cameraTrack) await sender.replaceTrack(cameraTrack);
+        });
 
         const restoredStream = new MediaStream([
             cameraTrack,
@@ -419,28 +559,36 @@ const MeetingRoom = () => {
         <div style={css.root}>
             <style>{globalCSS}</style>
 
+            {toasts.length > 0 && (
+                <div style={{ position: "absolute", top: 24, left: "50%", transform: "translateX(-50%)", zIndex: 1000, display: "flex", flexDirection: "column", gap: 8 }}>
+                    {toasts.map(t => (
+                        <div key={t.id} style={{ background: "#122056", color: "#FFF", padding: "12px 24px", borderRadius: "8px", fontSize: 14, boxShadow: "0 4px 12px rgba(0,0,0,0.15)", animation: "fadeIn 0.3s ease" }}>
+                            {t.msg}
+                        </div>
+                    ))}
+                </div>
+            )}
+
             <aside style={css.sidebar}>
                 <div style={css.logoArea}>
                     <div style={css.logoIcon}>
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
-                            <path d="M12 5v14M5 12h14" />
-                        </svg>
+                        <img src="/favicon.png" alt="Logo" style={{ width: 24, height: 24, objectFit: 'contain' }} />
                     </div>
                 </div>
                 <div style={css.sideNav}>
                     {["home", "video", "doc", "chat", "bell", "settings"].map((icon, i) => (
                         <button key={icon} style={{ ...css.sideBtn, ...(icon === "video" ? css.sideBtnActive : {}) }}>
-                            {icon === "home" && <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg>}
-                            {icon === "video" && <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>}
-                            {icon === "doc" && <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>}
-                            {icon === "chat" && <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>}
-                            {icon === "bell" && <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>}
-                            {icon === "settings" && <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>}
+                            {icon === "home" && <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><path d="M9 22V12h6v10" /></svg>}
+                            {icon === "video" && <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M23 7l-7 5 7 5V7z" /><rect x="1" y="5" width="15" height="14" rx="2" ry="2" /></svg>}
+                            {icon === "doc" && <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></svg>}
+                            {icon === "chat" && <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>}
+                            {icon === "bell" && <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></svg>}
+                            {icon === "settings" && <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>}
                         </button>
                     ))}
                 </div>
                 <button onClick={leaveRoom} style={css.sideExit}>
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
                 </button>
             </aside>
 
@@ -452,57 +600,59 @@ const MeetingRoom = () => {
                     </div>
                     <div style={css.headerRight}>
                         <div style={css.userPill}>
-                                <Avatar name={myName} size={28} />
-                                <span style={css.userName}>{myName}</span>
-                            </div>
+                            <Avatar name={myName} size={28} />
+                            <span style={css.userName}>{myName}</span>
+                        </div>
                     </div>
                 </header>
 
                 <div style={css.content}>
-
-                    {remoteStream && (
-                        <div style={css.thumbStrip}>
-                            <div style={css.thumbCard}>
-                                {localStream && !isCameraOff ? (
-                                    <VideoPlayer stream={localStream} muted />
-                                ) : (
-                                    <div style={css.thumbPlaceholder}><Avatar name={myName} size={40}/></div>
-                                )}
-                                <div style={css.thumbLabel}>{myName} (You)</div>
-                            </div>
-                        </div>
-                    )}
-
-                    <div style={css.stageArea}>
-                        {remoteStream ? (
-                            remoteStream.getVideoTracks().length > 0 ? (
-                                <VideoPlayer stream={remoteStream} />
+                    <div style={css.participantGrid}>
+                        {/* Local Video */}
+                        <div style={css.videoWrapper}>
+                            {localStream && !isCameraOff ? (
+                                <VideoPlayer stream={localStream} muted />
                             ) : (
                                 <div style={css.mainPlaceholder}>
-                                    <Avatar name={remoteUserName || "Participant"} size={120} />
-                                    <p style={css.placeholderText}>{remoteUserName || "Participant"}'s camera is off</p>
+                                    <Avatar name={myName} size={100} />
+                                    <p style={css.placeholderText}>{mediaError || "Your camera is off"}</p>
                                 </div>
-                            )
-                        ) : localStream && !isCameraOff ? (
-                            <VideoPlayer stream={localStream} muted />
-                        ) : (
-                            <div style={css.mainPlaceholder}>
-                                <Avatar name={myName} size={120} />
-                                <p style={css.placeholderText}>
-                                    {mediaError || "Your camera is off"}
-                                </p>
+                            )}
+                            <div style={css.mainLabel}>
+                                <div style={css.statusDot} />
+                                {myName} (You)
                             </div>
-                        )}
-                        <div style={css.mainLabel}>
-                            <div style={css.statusDot} />
-                            {remoteStream ? (remoteUserName || "Participant") : `${myName} (You)`}
                         </div>
+
+                        {/* Remote Videos */}
+                        {Object.entries(remoteParticipants).map(([socketId, participant]) => (
+                            <div key={socketId} style={css.videoWrapper}>
+                                {participant.stream && participant.stream.getVideoTracks().length > 0 ? (
+                                    <VideoPlayer stream={participant.stream} />
+                                ) : (
+                                    <div style={css.mainPlaceholder}>
+                                        <Avatar name={participant.userName || "Participant"} size={100} />
+                                        <p style={css.placeholderText}>{participant.userName || "Participant"}'s camera is off</p>
+                                    </div>
+                                )}
+                                <div style={css.mainLabel}>
+                                    <div style={css.statusDot} />
+                                    {participant.userName || "Participant"}
+                                </div>
+                            </div>
+                        ))}
                     </div>
+                </div>
 
                     <footer style={css.controlPill}>
                         <div style={css.roomIdBox}>
                             <span style={css.roomLabel}>Meeting ID</span>
-                            <span style={css.roomValue}>{roomId?.slice(0, 8)}</span>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                <span style={css.roomValue}>{roomId}</span>
+                                <button onClick={() => { navigator.clipboard.writeText(roomId); addToast("Meeting ID copied!"); }} style={{ background: "none", border: "none", cursor: "pointer", color: "#5B65DC", padding: 4, display: "flex", alignItems: "center" }}>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                                </button>
+                            </div>
                         </div>
                         <div style={css.btnGroup}>
                             <CtrlBtn onClick={toggleMute} active={!isMuted} label={isMuted ? "Unmute" : "Mute"}>
@@ -525,32 +675,73 @@ const MeetingRoom = () => {
 
             <aside style={css.chatContainer}>
                 <div style={css.panelHeader}>
-                    <button style={{...css.tab, ...css.tabActive}}>Chat</button>
-                    <button style={css.tab}>Participants ({remoteStream ? 2 : 1})</button>
+                    <button 
+                        onClick={() => setActiveTab("chat")}
+                        style={{ ...css.tab, ...(activeTab === "chat" ? css.tabActive : {}) }}
+                    >
+                        Chat
+                    </button>
+                    <button 
+                        onClick={() => setActiveTab("participants")}
+                        style={{ ...css.tab, ...(activeTab === "participants" ? css.tabActive : {}) }}
+                    >
+                        Participants ({Object.keys(remoteParticipants).length + 1})
+                    </button>
                 </div>
 
-                <div style={css.chatList}>
-                    {messages.length === 0 && (
-                        <div style={css.chatEmpty}>No messages yet. Send a greeting to the patient.</div>
-                    )}
-                    {messages.map((msg, i) => {
-                        const isOwn = msg.senderId === socket.id;
-                        const sender = msg.sender || remoteUserName || "Participant";
-                        return (
-                            <div key={i} style={{ ...css.msgGroup, alignItems: isOwn ? "flex-end" : "flex-start" }}>
-                                {!isOwn && <div style={css.msgSender}>{sender}</div>}
-                                <div style={isOwn ? css.bubbleOwn : css.bubbleOther}>
-                                    {msg.message}
+                {activeTab === "chat" ? (
+                    <div style={css.chatList}>
+                        {messages.length === 0 && (
+                            <div style={css.chatEmpty}>No messages yet. Send a greeting to the group.</div>
+                        )}
+                        {messages.map((msg, i) => {
+                            const isOwn = msg.senderId === socket.id;
+                            const sender = msg.sender || "Participant";
+                            return (
+                                <div key={i} style={{ ...css.msgGroup, alignItems: isOwn ? "flex-end" : "flex-start" }}>
+                                    {!isOwn && <div style={css.msgSender}>{sender}</div>}
+                                    <div style={isOwn ? css.bubbleOwn : css.bubbleOther}>
+                                        {msg.message}
+                                    </div>
+                                    <div style={css.msgMeta}>{msg.time ? formatTime(new Date(msg.time)) : ""}</div>
                                 </div>
-                                <div style={css.msgMeta}>{msg.time ? formatTime(new Date(msg.time)) : ""}</div>
+                            );
+                        })}
+                        {typing && <div style={css.typingIndicator}>{typing}</div>}
+                        <div ref={messagesEndRef} />
+                    </div>
+                ) : (
+                    <div style={css.participantList}>
+                        <div style={css.participantItem}>
+                            <Avatar name={myName} size={32} />
+                            <div style={css.participantInfo}>
+                                <div style={css.participantName}>{myName} (You)</div>
+                                <div style={css.participantStatus}>Host</div>
                             </div>
-                        );
-                    })}
-                    {typing && <div style={css.typingIndicator}>{typing}</div>}
-                    <div ref={messagesEndRef} />
-                </div>
+                        </div>
+                        {Object.entries(remoteParticipants).map(([id, p]) => (
+                            <div key={id} style={css.participantItem}>
+                                <Avatar name={p.userName || "Participant"} size={32} />
+                                <div style={css.participantInfo}>
+                                    <div style={css.participantName}>{p.userName || "Participant"}</div>
+                                    <div style={css.participantStatus}>Participant</div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
 
                 <div style={css.chatInputArea}>
+                    <div style={{ position: "relative" }}>
+                        <button onClick={() => setShowEmoji(!showEmoji)} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", height: 48, width: 40, color: "#8B94B1" }}>
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><path d="M8 14s1.5 2 4 2 4-2 4-2" /><line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" /></svg>
+                        </button>
+                        {showEmoji && (
+                            <div style={{ position: "absolute", bottom: "100%", left: 0, marginBottom: 8, zIndex: 100 }}>
+                                <EmojiPicker onEmojiClick={(e) => { setMessage(prev => prev + e.emoji); setShowEmoji(false); }} theme="light" />
+                            </div>
+                        )}
+                    </div>
                     <input
                         ref={inputRef}
                         type="text"
@@ -586,6 +777,11 @@ const globalCSS = `
     100% { transform: scale(1); opacity: 1; }
   }
   .pulse { animation: pulse 2s infinite ease-in-out; }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
 
   video {
     width: 100%; height: 100%;
@@ -726,30 +922,38 @@ const css = {
     },
     pulseSmall: { width: 12, height: 12, borderRadius: "50%", background: "#5B65DC" },
 
-    stageArea: {
+    participantGrid: {
         flex: 1,
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+        gap: 20,
+        overflowY: "auto",
+        padding: "4px",
+    },
+    videoWrapper: {
         background: "#122056",
         borderRadius: "24px",
         position: "relative",
         overflow: "hidden",
-        boxShadow: "0 20px 40px rgba(18, 32, 86, 0.1)",
+        boxShadow: "0 10px 30px rgba(18, 32, 86, 0.1)",
+        aspectRatio: "16/9",
     },
     mainPlaceholder: {
         width: "100%", height: "100%",
         display: "flex", flexDirection: "column",
         alignItems: "center", justifyContent: "center",
-        gap: 20,
+        gap: 16,
     },
-    placeholderText: { color: "rgba(255,255,255,0.5)", fontSize: 14, fontWeight: 500 },
+    placeholderText: { color: "rgba(255,255,255,0.5)", fontSize: 13, fontWeight: 500 },
     mainLabel: {
-        position: "absolute", bottom: 20, left: 20,
-        background: "rgba(18, 32, 86, 0.4)",
-        backdropFilter: "blur(10px)",
-        color: "#FFFFFF", padding: "8px 16px",
-        borderRadius: "12px", fontSize: 13, fontWeight: 600,
-        display: "flex", alignItems: "center", gap: 8,
+        position: "absolute", bottom: 16, left: 16,
+        background: "rgba(18, 32, 86, 0.5)",
+        backdropFilter: "blur(8px)",
+        color: "#FFFFFF", padding: "6px 12px",
+        borderRadius: "10px", fontSize: 12, fontWeight: 600,
+        display: "flex", alignItems: "center", gap: 6,
     },
-    statusDot: { width: 8, height: 8, borderRadius: "50%", background: "#10B981" },
+    statusDot: { width: 6, height: 6, borderRadius: "50%", background: "#10B981" },
 
     controlPill: {
         height: 80,
@@ -812,6 +1016,34 @@ const css = {
         gap: 20,
     },
     chatEmpty: { textAlign: "center", color: "#8B94B1", fontSize: 13, marginTop: 40 },
+    participantList: {
+        flex: 1,
+        overflowY: "auto",
+        padding: "24px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 16,
+    },
+    participantItem: {
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "8px 0",
+    },
+    participantInfo: {
+        display: "flex",
+        flexDirection: "column",
+        gap: 2,
+    },
+    participantName: {
+        fontSize: 14,
+        fontWeight: 600,
+        color: "#122056",
+    },
+    participantStatus: {
+        fontSize: 11,
+        color: "#8B94B1",
+    },
     msgGroup: { display: "flex", flexDirection: "column", gap: 4 },
     msgSender: { fontSize: 11, fontWeight: 700, color: "#8B94B1", marginLeft: 4 },
     bubbleOther: {
