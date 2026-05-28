@@ -6,9 +6,7 @@ import { generateMeetingSummary } from "../services/aiService.js";
 
 export const createMeeting = async (req, res) => {
     try {
-
         const { title = "Untitled Meeting" } = req.body;
-
         const roomId = uuidv4();
 
         const meeting = await Meeting.create({
@@ -19,9 +17,7 @@ export const createMeeting = async (req, res) => {
         });
 
         res.status(201).json(meeting);
-
     } catch (error) {
-
         res.status(500).json({
             message: error.message,
         });

@@ -34,6 +34,7 @@ const Dashboard = () => {
         }
     };
 
+
     useEffect(() => {
         if (!token) navigate("/login");
         else fetchMeetings();
@@ -214,93 +215,93 @@ const Dashboard = () => {
                         <>
                             <div style={css.hero}>
                                 <div style={css.actionCard}>
-                            <div style={css.actionIcon}>
-                                <IconVideo />
-                            </div>
-                            <div style={css.actionInfo}>
-                                <h3 style={css.actionTitle}>New Meeting</h3>
-                                <p style={css.actionDesc}>Start an instant secure video meeting with your team.</p>
-                            </div>
-                            <button onClick={handleCreateMeeting} style={css.primaryBtn}>
-                                Start Meeting
-                            </button>
-                        </div>
-
-                        <div style={css.actionCard}>
-                            <div style={css.actionIcon}>
-                                <IconDoc />
-                            </div>
-                            <div style={css.actionInfo}>
-                                <h3 style={css.actionTitle}>Join Meeting</h3>
-                                <p style={css.actionDesc}>Enter a meeting ID or link to join an existing session.</p>
-                            </div>
-                            <div style={css.inputRow}>
-                                <input
-                                    type="text"
-                                    placeholder="Meeting ID"
-                                    value={joinLink}
-                                    onChange={(e) => setJoinLink(e.target.value)}
-                                    onKeyDown={(e) => e.key === "Enter" && handleJoinMeeting()}
-                                    style={css.joinInput}
-                                />
-                                <button onClick={handleJoinMeeting} style={css.secondaryBtn}>
-                                    Join
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div style={css.historySection}>
-                        <h2 style={css.historyTitle}>Recent Consultations</h2>
-
-                        {loading ? (
-                            <div style={css.loadingWrap}>
-                                <div className="spinner" />
-                            </div>
-                        ) : meetings.length === 0 ? (
-                            <div style={css.emptyState}>
-                                <p style={css.emptyText}>No recent meetings found. Start your first consultation above.</p>
-                            </div>
-                        ) : (
-                            <div style={css.meetingGrid}>
-                                {meetings.map((meeting) => (
-                                    <div key={meeting._id} className="meeting-card" style={css.meetingCard}>
-                                        <div style={css.cardTop}>
-                                            <div style={css.cardIcon}>
-                                                <IconVideo />
-                                            </div>
-                                            <span style={css.cardBadge}>
-                                                COMPLETED
-                                            </span>
-                                        </div>
-                                        <h3 style={css.cardTitle}>{meeting.title || "Medical Consultation"}</h3>
-                                        <p style={css.cardRoomId}>ID: {meeting.roomId}</p>
-                                        <p style={css.cardDate}>
-                                            {new Date(meeting.createdAt).toLocaleDateString("en-US", {
-                                                month: "short", day: "numeric", year: "numeric",
-                                                hour: "2-digit", minute: "2-digit",
-                                            })}
-                                        </p>
-                                        <div style={css.cardActions}>
-                                            <button
-                                                onClick={() => navigate(`/meeting/${meeting.roomId}`)}
-                                                style={css.cardJoinBtn}
-                                            >
-                                                Rejoin
-                                            </button>
-                                            <button
-                                                onClick={() => handleAiClick(meeting)}
-                                                style={css.cardAiBtn}
-                                            >
-                                                <IconSparkles />
-                                                AI Summary
-                                            </button>
-                                        </div>
+                                    <div style={css.actionIcon}>
+                                        <IconVideo />
                                     </div>
-                                ))}
+                                    <div style={css.actionInfo}>
+                                        <h3 style={css.actionTitle}>New Meeting</h3>
+                                        <p style={css.actionDesc}>Start an instant secure video meeting with your team.</p>
+                                    </div>
+                                    <button onClick={handleCreateMeeting} style={css.primaryBtn}>
+                                        Start Meeting
+                                    </button>
+                                </div>
+
+                                <div style={css.actionCard}>
+                                    <div style={css.actionIcon}>
+                                        <IconDoc />
+                                    </div>
+                                    <div style={css.actionInfo}>
+                                        <h3 style={css.actionTitle}>Join Meeting</h3>
+                                        <p style={css.actionDesc}>Enter a meeting ID or link to join an existing session.</p>
+                                    </div>
+                                    <div style={css.inputRow}>
+                                        <input
+                                            type="text"
+                                            placeholder="Meeting ID"
+                                            value={joinLink}
+                                            onChange={(e) => setJoinLink(e.target.value)}
+                                            onKeyDown={(e) => e.key === "Enter" && handleJoinMeeting()}
+                                            style={css.joinInput}
+                                        />
+                                        <button onClick={handleJoinMeeting} style={css.secondaryBtn}>
+                                            Join
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
-                        )}
-                    </div>
+
+                            <div style={css.historySection}>
+                                <h2 style={css.historyTitle}>Recent Consultations</h2>
+
+                                {loading ? (
+                                    <div style={css.loadingWrap}>
+                                        <div className="spinner" />
+                                    </div>
+                                ) : meetings.length === 0 ? (
+                                    <div style={css.emptyState}>
+                                        <p style={css.emptyText}>No recent meetings found. Start your first consultation above.</p>
+                                    </div>
+                                ) : (
+                                    <div style={css.meetingGrid}>
+                                        {meetings.map((meeting) => (
+                                            <div key={meeting._id} className="meeting-card" style={css.meetingCard}>
+                                                <div style={css.cardTop}>
+                                                    <div style={css.cardIcon}>
+                                                        <IconVideo />
+                                                    </div>
+                                                    <span style={css.cardBadge}>
+                                                        COMPLETED
+                                                    </span>
+                                                </div>
+                                                <h3 style={css.cardTitle}>{meeting.title || "Medical Consultation"}</h3>
+                                                <p style={css.cardRoomId}>ID: {meeting.roomId}</p>
+                                                <p style={css.cardDate}>
+                                                    {new Date(meeting.createdAt).toLocaleDateString("en-US", {
+                                                        month: "short", day: "numeric", year: "numeric",
+                                                        hour: "2-digit", minute: "2-digit",
+                                                    })}
+                                                </p>
+                                                <div style={css.cardActions}>
+                                                    <button
+                                                        onClick={() => navigate(`/meeting/${meeting.roomId}`)}
+                                                        style={css.cardJoinBtn}
+                                                    >
+                                                        Rejoin
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleAiClick(meeting)}
+                                                        style={css.cardAiBtn}
+                                                    >
+                                                        <IconSparkles />
+                                                        AI Summary
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
                         </>
                     )}
                     {sidebarActive === "Document" && <DocumentTab />}

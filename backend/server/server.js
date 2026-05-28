@@ -17,6 +17,7 @@ const httpServer = createServer(app);
 const allowedOrigins = [
     process.env.CLIENT_URL,
     "http://localhost:5173",
+    "http://192.168.31.243:5173",
     "http://localhost:5174",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174"
@@ -25,6 +26,7 @@ const allowedOrigins = [
 const io = new Server(httpServer, {
     cors: {
         origin: (origin, callback) => {
+            console.log("origin", origin);
             if (!origin || allowedOrigins.includes(origin) || allowedOrigins.includes("*")) {
                 callback(null, true);
             } else {
