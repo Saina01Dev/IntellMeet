@@ -20,6 +20,7 @@ const httpServer = createServer(app);
 
 const allowedOrigins = [
     process.env.CLIENT_URL,
+    "https://intellmeet-video-meeting.vercel.app",
     "http://localhost:5173",
     "http://192.168.31.243:5173",
     "http://localhost:5174",
