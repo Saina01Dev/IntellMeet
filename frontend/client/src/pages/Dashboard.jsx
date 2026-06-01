@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { createMeeting, getMeetings, generateMeetingSummary } from "../services/meetingService";
+import { getDocuments } from "../services/documentService";
+import { getScheduledMeetings } from "../services/scheduledMeetingService";
 import { logout } from "../services/authService";
 import DocumentTab from "../components/DocumentTab";
 import ChatRoomTab from "../components/ChatRoomTab";
@@ -8,6 +10,8 @@ import ScheduleMeetingTab from "../components/ScheduleMeetingTab";
 import SettingsTab from "../components/SettingsTab";
 const Dashboard = () => {
     const [meetings, setMeetings] = useState([]);
+    const [docs, setDocs] = useState([]);
+    const [scheduledMeetings, setScheduledMeetings] = useState([]);
     const [loading, setLoading] = useState(true);
     const [joinLink, setJoinLink] = useState("");
     const [sidebarActive, setSidebarActive] = useState("Home");
@@ -25,8 +29,14 @@ const Dashboard = () => {
 
     const fetchMeetings = async () => {
         try {
-            const data = await getMeetings(token);
+            const [data, docsData, scheduledData] = await Promise.all([
+                getMeetings(token),
+                getDocuments().catch(() => []),
+                getScheduledMeetings().catch(() => [])
+            ]);
             setMeetings(data);
+            setDocs(docsData);
+            setScheduledMeetings(scheduledData);
         } catch (error) {
             console.error(error);
         } finally {
@@ -91,6 +101,8 @@ const Dashboard = () => {
                 ...prev,
                 summary: data.summary,
                 actionItems: data.actionItems,
+                decisionPoints: data.decisionPoints,
+                sentiment: data.sentiment,
                 transcript: aiTranscript
             }));
 
@@ -250,6 +262,21 @@ const Dashboard = () => {
                                     </div>
                                 </div>
                             </div>
+                            
+                            <div style={{ padding: "0 24px", marginBottom: 24, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 20 }}>
+                                <div style={{ background: "#FFFFFF", padding: 24, borderRadius: 20, boxShadow: "rgba(0, 0, 0, 0.02) 0px 1px 3px 0px" }}>
+                                    <h4 style={{ fontSize: 13, color: "#8B94B1", fontWeight: 700, marginBottom: 8, textTransform: "uppercase" }}>Total Meetings</h4>
+                                    <div style={{ fontSize: 32, fontWeight: 800, color: "#122056" }}>{meetings.length}</div>
+                                </div>
+                                <div style={{ background: "#FFFFFF", padding: 24, borderRadius: 20, boxShadow: "rgba(0, 0, 0, 0.02) 0px 1px 3px 0px" }}>
+                                    <h4 style={{ fontSize: 13, color: "#8B94B1", fontWeight: 700, marginBottom: 8, textTransform: "uppercase" }}>Upcoming Meetings</h4>
+                                    <div style={{ fontSize: 32, fontWeight: 800, color: "#122056" }}>{scheduledMeetings.length}</div>
+                                </div>
+                                <div style={{ background: "#FFFFFF", padding: 24, borderRadius: 20, boxShadow: "rgba(0, 0, 0, 0.02) 0px 1px 3px 0px" }}>
+                                    <h4 style={{ fontSize: 13, color: "#8B94B1", fontWeight: 700, marginBottom: 8, textTransform: "uppercase" }}>Saved Documents</h4>
+                                    <div style={{ fontSize: 32, fontWeight: 800, color: "#122056" }}>{docs.length}</div>
+                                </div>
+                            </div>
 
                             <div style={css.historySection}>
                                 <h2 style={css.historyTitle}>Recent Consultations</h2>
@@ -364,6 +391,39 @@ const Dashboard = () => {
                                                     </li>
                                                 ))}
                                             </ul>
+                                        </div>
+                                    )}
+
+                                    {activeAiMeeting.decisionPoints?.length > 0 && (
+                                        <div style={css.resultCard}>
+                                            <h3 style={css.resultHeader}>Key Decisions</h3>
+                                            <ul style={css.actionList}>
+                                                {activeAiMeeting.decisionPoints.map((dec, idx) => (
+                                                    <li key={idx} style={{ ...css.actionItem, padding: "12px 16px" }}>
+                                                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                                            <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#5B65DC" }} />
+                                                            <span style={{ fontSize: 14, fontWeight: 500, color: "#122056" }}>{dec}</span>
+                                                        </div>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    )}
+                                    
+                                    {activeAiMeeting.sentiment && (
+                                        <div style={css.resultCard}>
+                                            <h3 style={css.resultHeader}>Sentiment Analysis</h3>
+                                            <div style={{ 
+                                                display: "inline-block", 
+                                                padding: "8px 16px", 
+                                                borderRadius: 8, 
+                                                background: activeAiMeeting.sentiment.toLowerCase() === "positive" ? "rgba(16, 185, 129, 0.1)" : activeAiMeeting.sentiment.toLowerCase() === "negative" ? "rgba(255, 77, 78, 0.1)" : "#EEEFFD", 
+                                                color: activeAiMeeting.sentiment.toLowerCase() === "positive" ? "#10B981" : activeAiMeeting.sentiment.toLowerCase() === "negative" ? "#FF4D4E" : "#5B65DC",
+                                                fontWeight: 800,
+                                                fontSize: 14
+                                            }}>
+                                                {activeAiMeeting.sentiment}
+                                            </div>
                                         </div>
                                     )}
 

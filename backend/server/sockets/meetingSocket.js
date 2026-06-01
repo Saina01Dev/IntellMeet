@@ -1,3 +1,5 @@
+import ChatMessage from "../models/ChatMessage.js";
+
 const activeUsers = {};
 
 export const initializeSocket = (io) => {
@@ -57,8 +59,27 @@ export const initializeSocket = (io) => {
         });
 
 
-        socket.on("send-message", (data) => {
-            io.to(data.roomId).emit("receive-message", data);
+        socket.on("send-message", async (data) => {
+            if (data.roomId === "global") {
+                try {
+                    const newMsg = await ChatMessage.create({
+                        sender: data.sender || "Unknown",
+                        message: data.message
+                    });
+                    io.to("global").emit("receive-message", {
+                        _id: newMsg._id,
+                        sender: newMsg.sender,
+                        message: newMsg.message,
+                        createdAt: newMsg.createdAt,
+                        roomId: "global",
+                        time: newMsg.createdAt
+                    });
+                } catch (error) {
+                    console.error("Error saving global chat message:", error);
+                }
+            } else {
+                io.to(data.roomId).emit("receive-message", data);
+            }
         });
 
 

@@ -1,114 +1,162 @@
-import React from 'react';
+import { useState, useEffect } from "react";
+import { getDocuments, deleteDocument } from "../services/documentService";
 
 const DocumentTab = () => {
-    return (
-        <div style={css.container}>
-            <div style={css.card}>
-                <div style={css.header}>
-                    <div style={css.iconBox}>
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
-                    </div>
-                    <div>
-                        <h2 style={css.title}>Documents</h2>
-                        <p style={css.subtitle}>Manage your meeting notes, transcripts, and shared files here.</p>
-                    </div>
-                </div>
+    const [docs, setDocs] = useState([]);
+    const [search, setSearch] = useState("");
+    const [loading, setLoading] = useState(true);
 
-                <div style={css.emptyState}>
-                    <div style={css.emptyIcon}>📄</div>
-                    <h3 style={css.emptyTitle}>No Documents Yet</h3>
-                    <p style={css.emptyText}>Documents and summaries from your meetings will appear here automatically.</p>
-                    <button style={css.primaryBtn}>Upload Document</button>
+    useEffect(() => {
+        getDocuments()
+            .then(setDocs)
+            .catch(console.error)
+            .finally(() => setLoading(false));
+    }, []);
+
+    const handleDelete = async (id) => {
+        try {
+            await deleteDocument(id);
+            setDocs(docs.filter(d => d._id !== id));
+        } catch (error) {
+            console.error("Failed to delete document:", error);
+            alert("Failed to delete document");
+        }
+    };
+
+    const handleDownload = (doc) => {
+        const actionItemsText = doc.actionItems?.length 
+            ? doc.actionItems.map(a => `- ${a.task} (@${a.assignee || 'Unassigned'})${a.deadline ? ` by ${a.deadline}` : ''}`).join("\n")
+            : "No action items";
+            
+        const decisionsText = doc.decisionPoints?.length
+            ? doc.decisionPoints.map(d => `- ${d}`).join("\n")
+            : "No key decisions";
+
+        const text = `Meeting Title: ${doc.title}
+Date: ${new Date(doc.createdAt).toLocaleDateString()}
+Sentiment: ${doc.sentiment || 'Neutral'}
+
+--- SUMMARY ---
+${doc.summary}
+
+--- KEY DECISIONS ---
+${decisionsText}
+
+--- ACTION ITEMS ---
+${actionItemsText}`;
+
+        const blob = new Blob([text], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${doc.title.replace(/\s+/g, '_')}_Summary.txt`;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
+    const filtered = docs.filter(d => d.title.toLowerCase().includes(search.toLowerCase()));
+
+    if (loading) {
+        return <div style={{ padding: 40, textAlign: "center" }}>Loading documents...</div>;
+    }
+
+    return (
+        <div style={{ padding: 24 }}>
+            <h2 style={{ fontSize: 24, fontWeight: 800, color: "#122056", marginBottom: 20 }}>Saved Documents</h2>
+            
+            <input 
+                type="text" 
+                placeholder="Search by meeting title..." 
+                value={search} 
+                onChange={e => setSearch(e.target.value)} 
+                style={{ 
+                    padding: 16, 
+                    marginBottom: 24, 
+                    width: "100%", 
+                    borderRadius: 12, 
+                    border: "1px solid #EEEFFD",
+                    background: "#FFFFFF",
+                    fontSize: 15,
+                    color: "#122056",
+                    outline: "none"
+                }} 
+            />
+            
+            {filtered.length === 0 ? (
+                <div style={{ background: "#FFFFFF", padding: 40, borderRadius: 16, textAlign: "center", color: "#8B94B1" }}>
+                    No documents found.
                 </div>
-            </div>
+            ) : (
+                <div style={{ display: "grid", gap: 20, gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))" }}>
+                    {filtered.map(doc => (
+                        <div key={doc._id} style={{ 
+                            padding: 24, 
+                            background: "#FFFFFF", 
+                            borderRadius: 16, 
+                            boxShadow: "rgba(0, 0, 0, 0.02) 0px 1px 3px 0px",
+                            display: "flex",
+                            flexDirection: "column"
+                        }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                                <h3 style={{ fontSize: 18, fontWeight: 800, color: "#122056" }}>{doc.title}</h3>
+                                {doc.sentiment && (
+                                    <span style={{ 
+                                        fontSize: 11, 
+                                        fontWeight: 800, 
+                                        padding: "4px 8px", 
+                                        borderRadius: 6,
+                                        background: doc.sentiment.toLowerCase() === "positive" ? "rgba(16, 185, 129, 0.1)" : doc.sentiment.toLowerCase() === "negative" ? "rgba(255, 77, 78, 0.1)" : "#EEEFFD",
+                                        color: doc.sentiment.toLowerCase() === "positive" ? "#10B981" : doc.sentiment.toLowerCase() === "negative" ? "#FF4D4E" : "#5B65DC"
+                                    }}>
+                                        {doc.sentiment}
+                                    </span>
+                                )}
+                            </div>
+                            <p style={{ fontSize: 12, color: "#8B94B1", marginBottom: 16, fontWeight: 600 }}>
+                                {new Date(doc.createdAt).toLocaleDateString()}
+                            </p>
+                            
+                            <p style={{ fontSize: 14, color: "#122056", lineHeight: 1.6, flex: 1, marginBottom: 20 }}>
+                                {doc.summary.substring(0, 150)}...
+                            </p>
+                            
+                            <div style={{ display: "flex", gap: 10, marginTop: "auto" }}>
+                                <button 
+                                    onClick={() => handleDownload(doc)} 
+                                    style={{ 
+                                        background: "#EEEFFD", 
+                                        color: "#5B65DC", 
+                                        border: "none", 
+                                        padding: "10px 16px", 
+                                        borderRadius: 10, 
+                                        cursor: "pointer",
+                                        fontWeight: 700,
+                                        flex: 1
+                                    }}
+                                >
+                                    Download TXT
+                                </button>
+                                <button 
+                                    onClick={() => handleDelete(doc._id)} 
+                                    style={{ 
+                                        background: "rgba(255, 77, 78, 0.1)", 
+                                        color: "#FF4D4E", 
+                                        border: "none", 
+                                        padding: "10px 16px", 
+                                        borderRadius: 10, 
+                                        cursor: "pointer",
+                                        fontWeight: 700
+                                    }}
+                                >
+                                    Delete
+                                </button>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
         </div>
     );
-};
-
-const css = {
-    container: {
-        padding: "24px",
-        display: "flex",
-        flexDirection: "column",
-        gap: 20,
-    },
-    card: {
-        background: "#FFFFFF",
-        borderRadius: 24,
-        padding: 32,
-        boxShadow: "rgba(0, 0, 0, 0.02) 0px 1px 3px 0px, rgba(27, 31, 35, 0.15) 0px 0px 0px 1px",
-        minHeight: "60vh",
-        display: "flex",
-        flexDirection: "column",
-    },
-    header: {
-        display: "flex",
-        alignItems: "center",
-        gap: 20,
-        marginBottom: 40,
-        borderBottom: "1px solid #FAFAFD",
-        paddingBottom: 24,
-    },
-    iconBox: {
-        width: 56, height: 56,
-        borderRadius: 16,
-        background: "#EEEFFD",
-        color: "#5B65DC",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        flexShrink: 0,
-    },
-    title: {
-        fontSize: 22,
-        fontWeight: 800,
-        color: "#122056",
-        marginBottom: 6,
-    },
-    subtitle: {
-        color: "#8B94B1",
-        fontSize: 15,
-        fontWeight: 500,
-    },
-    emptyState: {
-        flex: 1,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        textAlign: "center",
-        padding: 40,
-        background: "#FAFAFD",
-        borderRadius: 20,
-        border: "1px dashed #EEEFFD",
-    },
-    emptyIcon: {
-        fontSize: 48,
-        marginBottom: 20,
-    },
-    emptyTitle: {
-        fontSize: 18,
-        fontWeight: 700,
-        color: "#122056",
-        marginBottom: 8,
-    },
-    emptyText: {
-        color: "#8B94B1",
-        fontSize: 14,
-        marginBottom: 24,
-        maxWidth: 300,
-        lineHeight: 1.5,
-    },
-    primaryBtn: {
-        padding: "12px 24px",
-        borderRadius: 14,
-        background: "#5B65DC",
-        color: "#FFFFFF",
-        border: "none",
-        fontSize: 14,
-        fontWeight: 700,
-        cursor: "pointer",
-        transition: "all 0.2s",
-        boxShadow: "0 6px 15px rgba(91, 101, 220, 0.2)",
-    }
 };
 
 export default DocumentTab;

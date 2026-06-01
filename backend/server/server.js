@@ -7,6 +7,10 @@ import connectDB from "./config/db.js";
 import authRoutes from "./routes/authRoutes.js";
 import testRoutes from "./routes/testRoutes.js";
 import meetingRoutes from "./routes/meetingRoutes.js";
+import documentRoutes from "./routes/documentRoutes.js";
+import chatRoutes from "./routes/chatRoutes.js";
+import scheduledMeetingRoutes from "./routes/scheduledMeetingRoutes.js";
+import settingsRoutes from "./routes/settingsRoutes.js";
 import { initializeSocket } from "./sockets/meetingSocket.js";
 
 dotenv.config();
@@ -58,6 +62,10 @@ app.get("/", (req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/test", testRoutes);
 app.use("/api/meetings", meetingRoutes);
+app.use("/api/documents", documentRoutes);
+app.use("/api/chat", chatRoutes);
+app.use("/api/scheduled-meetings", scheduledMeetingRoutes);
+app.use("/api/settings", settingsRoutes);
 
 const PORT = process.env.PORT || 5000;
 

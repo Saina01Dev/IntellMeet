@@ -42,6 +42,16 @@ const meetingSchema = new mongoose.Schema(
                 deadline: String,
             },
         ],
+
+        decisionPoints: {
+            type: [String],
+            default: [],
+        },
+
+        sentiment: {
+            type: String,
+            default: "Neutral",
+        },
     },
     { timestamps: true }
 );

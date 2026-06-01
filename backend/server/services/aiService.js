@@ -20,6 +20,8 @@ Also extract:
 1. Key decisions
 2. Important discussion points
 3. Action items with assignees and deadlines.
+4. Key decisions made (as an array of strings).
+5. Sentiment of the meeting (Positive, Neutral, or Negative).
 
 Respond in JSON format EXACTLY matching this structure:
 {
@@ -30,7 +32,9 @@ Respond in JSON format EXACTLY matching this structure:
       "assignee": "Name of assignee",
       "deadline": "Deadline"
     }
-  ]
+  ],
+  "decisionPoints": ["Decision 1", "Decision 2"],
+  "sentiment": "Positive"
 }
 
 Meeting Transcript:
@@ -50,7 +54,9 @@ ${transcript}
         const result = JSON.parse(response.choices[0].message.content);
         return {
             summary: result.summary || "No summary generated.",
-            actionItems: result.actionItems || []
+            actionItems: result.actionItems || [],
+            decisionPoints: result.decisionPoints || [],
+            sentiment: result.sentiment || "Neutral"
         };
 
     } catch (error) {
@@ -66,7 +72,13 @@ ${transcript}
                     { task: "Top up OpenAI API balance", assignee: "Admin", deadline: "As soon as possible" },
                     { task: "Finalize UI components for Meeting Room", assignee: "Design Team", deadline: "Friday" },
                     { task: "Implement real-time transcription", assignee: "Engineering", deadline: "Next Week" }
-                ]
+                ],
+                decisionPoints: [
+                    "Use blue palette for brand",
+                    "Proceed with Groq API integration",
+                    "Delay mobile app launch"
+                ],
+                sentiment: "Positive"
             };
         }
 

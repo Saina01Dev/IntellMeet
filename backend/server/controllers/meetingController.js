@@ -1,6 +1,7 @@
 import Meeting from "../models/Meeting.js";
 import { v4 as uuidv4 } from "uuid";
 import { generateMeetingSummary } from "../services/aiService.js";
+import Document from "../models/Document.js";
 
 
 
@@ -111,12 +112,26 @@ export const generateSummary = async (req, res) => {
         meeting.transcript = transcript;
         meeting.summary = aiResult.summary;
         meeting.actionItems = aiResult.actionItems;
+        meeting.decisionPoints = aiResult.decisionPoints;
+        meeting.sentiment = aiResult.sentiment;
         await meeting.save();
+
+        // Also save to Documents page automatically
+        await Document.create({
+            title: meeting.title,
+            summary: aiResult.summary,
+            actionItems: aiResult.actionItems,
+            decisionPoints: aiResult.decisionPoints,
+            sentiment: aiResult.sentiment,
+            createdBy: req.user._id,
+        });
 
         res.json({
             message: "Summary generated successfully",
             summary: meeting.summary,
-            actionItems: meeting.actionItems
+            actionItems: meeting.actionItems,
+            decisionPoints: meeting.decisionPoints,
+            sentiment: meeting.sentiment
         });
 
     } catch (error) {

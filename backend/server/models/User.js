@@ -17,6 +17,17 @@ const userSchema = new mongoose.Schema(
             type: String,
             required: true,
         },
+
+        settings: {
+            muteMicOnJoin: {
+                type: Boolean,
+                default: false,
+            },
+            disableCameraOnJoin: {
+                type: Boolean,
+                default: false,
+            },
+        },
     },
     { timestamps: true }
 );
