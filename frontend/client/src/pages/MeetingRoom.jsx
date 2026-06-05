@@ -156,8 +156,8 @@ const MeetingRoom = () => {
     const [messages, setMessages] = useState([]);
     const [typing, setTyping] = useState("");
     const [localStream, setLocalStream] = useState(null);
-    const [remoteStream, setRemoteStream] = useState(null);
-    const [remoteUserName, setRemoteUserName] = useState("");
+    const [remoteStreams, setRemoteStreams] = useState({});
+
     const [isMuted, setIsMuted] = useState(false);
     const [isCameraOff, setIsCameraOff] = useState(false);
     const [isScreenSharing, setIsScreenSharing] = useState(false);
@@ -178,10 +178,10 @@ const MeetingRoom = () => {
     const typingTimeoutRef = useRef(null);
     const messagesEndRef = useRef(null);
     const inputRef = useRef(null);
-    const peerRef = useRef(null);
+    const peersRef = useRef({});
     const localStreamRef = useRef(null);
-    const pendingCandidatesRef = useRef([]);
-    const joinedRef = useRef(false);
+    const pendingCandidatesRef = useRef({});
+
 
 
     useEffect(() => {
@@ -204,18 +204,8 @@ const MeetingRoom = () => {
 
 
     useEffect(() => {
-        return () => {
-            localStreamRef.current?.getTracks().forEach((t) => t.stop());
-            peerRef.current?.close();
-        };
-    }, []);
-
-
-    useEffect(() => {
-        if (joinedRef.current) return;
-        joinedRef.current = true;
-
         let stream = null;
+        let isMounted = true;
         const getMedia = async () => {
             try {
                 if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -237,58 +227,75 @@ const MeetingRoom = () => {
                 }
             }
 
+            if (!isMounted) {
+                stream?.getTracks().forEach(t => t.stop());
+                return;
+            }
+
             if (stream) {
                 setLocalStream(stream);
                 localStreamRef.current = stream;
             }
 
-
             console.log(`[Meeting] Joining room ${roomId} as "${myName}"`);
             socket.emit("join-room", { roomId, userId: socket.id, userName: myName });
         };
         getMedia();
-        return () => stream?.getTracks().forEach((t) => t.stop());
-    }, [roomId]);
-
+        
+        return () => {
+            isMounted = false;
+            stream?.getTracks().forEach((t) => t.stop());
+            localStreamRef.current = null;
+            setLocalStream(null);
+            Object.values(peersRef.current).forEach(peer => peer.close());
+            peersRef.current = {};
+            setRemoteStreams({});
+        };
+    }, [roomId, myName]);
 
     useEffect(() => {
-        const createPeer = (targetSocketId) => {
+        const createPeer = (targetSocketId, targetUserName) => {
             const peer = new RTCPeerConnection(peerConfig);
-            peerRef.current = peer;
+            peersRef.current[targetSocketId] = peer;
+            pendingCandidatesRef.current[targetSocketId] = pendingCandidatesRef.current[targetSocketId] || [];
 
             peer.oniceconnectionstatechange = () => {
-                console.log("[WebRTC] ICE Connection State:", peer.iceConnectionState);
+                console.log(`[WebRTC] ICE Connection State changed to: ${peer.iceConnectionState}`);
+            };
+
+            peer.onsignalingstatechange = () => {
+                console.log(`[WebRTC] Signaling State changed to: ${peer.signalingState}`);
             };
 
             if (localStreamRef.current) {
+                console.log("[WebRTC] Adding local tracks to peer connection");
                 localStreamRef.current.getTracks().forEach((t) => peer.addTrack(t, localStreamRef.current));
             }
 
             peer.ontrack = (e) => {
-                console.log("[WebRTC] Received remote track:", e.track.kind);
+                console.log(`[WebRTC] Received remote track: ${e.track.kind}`);
                 if (e.streams && e.streams[0]) {
-                    setRemoteStream(e.streams[0]);
+                    console.log("[WebRTC] Remote stream attached");
+                    setRemoteStreams(prev => ({
+                        ...prev,
+                        [targetSocketId]: { stream: e.streams[0], userName: targetUserName || "Participant" }
+                    }));
                 } else {
+                    console.log("[WebRTC] Creating new MediaStream for track");
                     const stream = new MediaStream([e.track]);
-                    setRemoteStream(stream);
-                }
-            };
-
-            peer.onnegotiationneeded = async () => {
-                try {
-                    console.log("[WebRTC] Negotiation needed, creating offer...");
-                    const offer = await peer.createOffer();
-                    await peer.setLocalDescription(offer);
-                    socket.emit("offer", { offer, to: targetSocketId });
-                } catch (err) {
-                    console.error("[WebRTC] Negotiation error:", err);
+                    setRemoteStreams(prev => ({
+                        ...prev,
+                        [targetSocketId]: { stream, userName: targetUserName || "Participant" }
+                    }));
                 }
             };
 
             peer.onicecandidate = (e) => {
                 if (e.candidate) {
-                    console.log("[WebRTC] Sending ICE candidate to", targetSocketId);
+                    console.log(`[WebRTC] Generated ICE candidate, sending to ${targetSocketId}`);
                     socket.emit("ice-candidate", { candidate: e.candidate, to: targetSocketId });
+                } else {
+                    console.log("[WebRTC] ICE candidate gathering complete");
                 }
             };
 
@@ -296,61 +303,78 @@ const MeetingRoom = () => {
         };
 
         const handleOffer = async ({ offer, from }) => {
-            console.log("[WebRTC] Received offer from", from);
-            const peer = createPeer(from);
+            console.log(`[WebRTC] Received offer from ${from}`, offer);
+            let targetUserName = "Participant";
+            setParticipants(prev => {
+                const u = prev.find(p => p.socketId === from);
+                if (u && u.userName) targetUserName = u.userName;
+                return prev;
+            });
+
+            const peer = createPeer(from, targetUserName);
+            console.log("[WebRTC] Setting remote description (offer)");
             await peer.setRemoteDescription(new RTCSessionDescription(offer));
 
+            console.log("[WebRTC] Creating answer");
             const answer = await peer.createAnswer();
+            console.log("[WebRTC] Setting local description (answer)");
             await peer.setLocalDescription(answer);
-            console.log("[WebRTC] Sending answer to", from);
+            console.log(`[WebRTC] Sending answer to ${from}`);
             socket.emit("answer", { answer, to: from });
 
-            if (pendingCandidatesRef.current.length > 0) {
-                console.log("[WebRTC] Processing", pendingCandidatesRef.current.length, "pending candidates");
-                pendingCandidatesRef.current.forEach((candidate) => {
+            const pending = pendingCandidatesRef.current[from] || [];
+            if (pending.length > 0) {
+                console.log("[WebRTC] Processing", pending.length, "pending candidates");
+                pending.forEach((candidate) => {
                     peer.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => console.error("Error adding pending candidate", e));
                 });
-                pendingCandidatesRef.current = [];
+                pendingCandidatesRef.current[from] = [];
             }
         };
 
-        const handleAnswer = async ({ answer }) => {
-            console.log("[WebRTC] Received answer");
-            if (peerRef.current) {
-                await peerRef.current.setRemoteDescription(new RTCSessionDescription(answer));
+        const handleAnswer = async ({ answer, from }) => {
+            console.log("[WebRTC] Received answer from remote peer", from);
+            const peer = peersRef.current[from];
+            if (peer) {
+                console.log("[WebRTC] Setting remote description (answer)");
+                await peer.setRemoteDescription(new RTCSessionDescription(answer));
 
-                if (pendingCandidatesRef.current.length > 0) {
-                    console.log("[WebRTC] Processing", pendingCandidatesRef.current.length, "pending candidates after answer");
-                    pendingCandidatesRef.current.forEach((candidate) => {
-                        peerRef.current.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => console.error("Error adding pending candidate", e));
+                const pending = pendingCandidatesRef.current[from] || [];
+                if (pending.length > 0) {
+                    console.log("[WebRTC] Processing", pending.length, "pending candidates after answer");
+                    pending.forEach((candidate) => {
+                        peer.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => console.error("Error adding pending candidate", e));
                     });
-                    pendingCandidatesRef.current = [];
+                    pendingCandidatesRef.current[from] = [];
                 }
             }
         };
 
-        const handleIceCandidate = async ({ candidate }) => {
-            if (peerRef.current && peerRef.current.remoteDescription) {
+        const handleIceCandidate = async ({ candidate, from }) => {
+            console.log("[WebRTC] Received remote ICE candidate from", from);
+            const peer = peersRef.current[from];
+            if (peer && peer.remoteDescription) {
                 try {
-                    await peerRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+                    console.log("[WebRTC] Adding remote ICE candidate to peer connection");
+                    await peer.addIceCandidate(new RTCIceCandidate(candidate));
                 } catch (e) {
                     console.error("[WebRTC] Error adding ICE candidate", e);
                 }
             } else {
                 console.log("[WebRTC] Queuing ICE candidate (peer not ready)");
-                pendingCandidatesRef.current.push(candidate);
+                pendingCandidatesRef.current[from] = pendingCandidatesRef.current[from] || [];
+                pendingCandidatesRef.current[from].push(candidate);
             }
         };
 
-        socket.on("active-participants", (users) => {
+        const handleActiveParticipants = (users) => {
             console.log("[Meeting] Active participants:", users);
             setParticipants(users);
-        });
+        };
 
-        socket.on("user-joined", async (user) => {
+        const handleUserJoined = async (user) => {
             const { socketId, userName } = user;
             console.log(`[Meeting] User joined: "${userName}" (${socketId})`);
-            setRemoteUserName(userName || "Participant");
             addToast(`${userName || "A participant"} joined the meeting`);
             setParticipants(prev => {
                 const exists = prev.find(u => u.socketId === socketId);
@@ -358,38 +382,48 @@ const MeetingRoom = () => {
                 return [...prev, user];
             });
 
-            const peer = createPeer(socketId);
+            const peer = createPeer(socketId, userName);
+            console.log("[WebRTC] Creating offer");
             const offer = await peer.createOffer();
+            console.log("[WebRTC] Setting local description (offer)");
             await peer.setLocalDescription(offer);
-            console.log("[WebRTC] Sending offer to", socketId);
+            console.log(`[WebRTC] Sending offer to ${socketId}`);
             socket.emit("offer", { offer, to: socketId });
-        });
+        };
 
-        socket.on("offer", handleOffer);
-        socket.on("answer", handleAnswer);
-        socket.on("ice-candidate", handleIceCandidate);
-
-        socket.on("user-left", ({ socketId }) => {
+        const handleUserLeft = ({ socketId }) => {
             console.log(`[Meeting] User left: ${socketId}`);
             setParticipants(prev => {
                 const user = prev.find(u => u.socketId === socketId);
                 if (user) addToast(`${user.userName || "A participant"} left the meeting`);
                 return prev.filter(u => u.socketId !== socketId);
             });
-            peerRef.current?.close();
-            peerRef.current = null;
-            setRemoteStream(null);
-            setRemoteUserName("");
-            pendingCandidatesRef.current = [];
-        });
+            if (peersRef.current[socketId]) {
+                peersRef.current[socketId].close();
+                delete peersRef.current[socketId];
+            }
+            setRemoteStreams(prev => {
+                const next = { ...prev };
+                delete next[socketId];
+                return next;
+            });
+            delete pendingCandidatesRef.current[socketId];
+        };
+
+        socket.on("active-participants", handleActiveParticipants);
+        socket.on("user-joined", handleUserJoined);
+        socket.on("offer", handleOffer);
+        socket.on("answer", handleAnswer);
+        socket.on("ice-candidate", handleIceCandidate);
+        socket.on("user-left", handleUserLeft);
 
         return () => {
-            socket.off("active-participants");
-            socket.off("user-joined");
-            socket.off("offer");
-            socket.off("answer");
-            socket.off("ice-candidate");
-            socket.off("user-left");
+            socket.off("active-participants", handleActiveParticipants);
+            socket.off("user-joined", handleUserJoined);
+            socket.off("offer", handleOffer);
+            socket.off("answer", handleAnswer);
+            socket.off("ice-candidate", handleIceCandidate);
+            socket.off("user-left", handleUserLeft);
         };
     }, []);
 
@@ -434,13 +468,15 @@ const MeetingRoom = () => {
                 setLocalStream(newStream);
                 localStreamRef.current = newStream;
 
-                if (peerRef.current) {
-                    const sender = peerRef.current.getSenders().find(s => s.track && s.track.kind === 'video');
-                    if (sender) {
-                        sender.replaceTrack(newTrack);
-                    } else {
-                        peerRef.current.addTrack(newTrack, newStream);
-                    }
+                if (peersRef.current) {
+                    Object.values(peersRef.current).forEach(peer => {
+                        const sender = peer.getSenders().find(s => s.track && s.track.kind === 'video');
+                        if (sender) {
+                            sender.replaceTrack(newTrack);
+                        } else {
+                            peer.addTrack(newTrack, newStream);
+                        }
+                    });
                 }
                 setIsCameraOff(false);
             } catch (err) {
@@ -452,10 +488,10 @@ const MeetingRoom = () => {
 
     const leaveRoom = () => {
         localStreamRef.current?.getTracks().forEach((t) => t.stop());
-        peerRef.current?.close();
-        ["user-joined", "offer", "answer", "ice-candidate"].forEach((e) => socket.off(e));
+        Object.values(peersRef.current).forEach(peer => peer.close());
+        peersRef.current = {};
         setLocalStream(null);
-        setRemoteStream(null);
+        setRemoteStreams({});
         window.location.href = "/";
     };
 
@@ -463,8 +499,11 @@ const MeetingRoom = () => {
         try {
             const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
             const screenTrack = screenStream.getVideoTracks()[0];
-            const sender = peerRef.current?.getSenders().find((s) => s.track?.kind === "video");
-            if (sender) await sender.replaceTrack(screenTrack);
+            
+            Object.values(peersRef.current).forEach(async (peer) => {
+                const sender = peer.getSenders().find((s) => s.track?.kind === "video");
+                if (sender) await sender.replaceTrack(screenTrack);
+            });
 
             const updatedStream = new MediaStream([
                 screenTrack,
@@ -481,8 +520,11 @@ const MeetingRoom = () => {
 
     const stopScreenShare = async () => {
         const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
-        const sender = peerRef.current?.getSenders().find((s) => s.track?.kind === "video");
-        if (sender && cameraTrack) await sender.replaceTrack(cameraTrack);
+        
+        Object.values(peersRef.current).forEach(async (peer) => {
+            const sender = peer.getSenders().find((s) => s.track?.kind === "video");
+            if (sender && cameraTrack) await sender.replaceTrack(cameraTrack);
+        });
 
         const restoredStream = new MediaStream([
             cameraTrack,
@@ -546,7 +588,7 @@ const MeetingRoom = () => {
 
                 <div style={css.content}>
 
-                    {remoteStream && (
+                    {Object.keys(remoteStreams).length > 0 && (
                         <div style={css.thumbStrip}>
                             <div style={css.thumbCard}>
                                 {localStream && !isCameraOff ? (
@@ -556,33 +598,63 @@ const MeetingRoom = () => {
                                 )}
                                 <div style={css.thumbLabel}>{myName} (You)</div>
                             </div>
+                            {Object.entries(remoteStreams).slice(1).map(([id, data]) => (
+                                <div key={id} style={css.thumbCard}>
+                                    {data.stream && data.stream.getVideoTracks().length > 0 ? (
+                                        <VideoPlayer stream={data.stream} />
+                                    ) : (
+                                        <div style={css.thumbPlaceholder}><Avatar name={data.userName} size={40} /></div>
+                                    )}
+                                    <div style={css.thumbLabel}>{data.userName}</div>
+                                </div>
+                            ))}
                         </div>
                     )}
 
                     <div style={css.stageArea}>
-                        {remoteStream ? (
-                            remoteStream.getVideoTracks().length > 0 ? (
-                                <VideoPlayer stream={remoteStream} />
-                            ) : (
-                                <div style={css.mainPlaceholder}>
-                                    <Avatar name={remoteUserName || "Participant"} size={120} />
-                                    <p style={css.placeholderText}>{remoteUserName || "Participant"}'s camera is off</p>
-                                </div>
-                            )
+                        {Object.keys(remoteStreams).length > 0 ? (
+                            (() => {
+                                const firstRemoteId = Object.keys(remoteStreams)[0];
+                                const firstRemote = remoteStreams[firstRemoteId];
+                                return (
+                                    <>
+                                        {firstRemote.stream && firstRemote.stream.getVideoTracks().length > 0 ? (
+                                            <VideoPlayer stream={firstRemote.stream} />
+                                        ) : (
+                                            <div style={css.mainPlaceholder}>
+                                                <Avatar name={firstRemote.userName || "Participant"} size={120} />
+                                                <p style={css.placeholderText}>{firstRemote.userName || "Participant"}'s camera is off</p>
+                                            </div>
+                                        )}
+                                        <div style={css.mainLabel}>
+                                            <div style={css.statusDot} />
+                                            {firstRemote.userName || "Participant"}
+                                        </div>
+                                    </>
+                                );
+                            })()
                         ) : localStream && !isCameraOff ? (
-                            <VideoPlayer stream={localStream} muted />
+                            <>
+                                <VideoPlayer stream={localStream} muted />
+                                <div style={css.mainLabel}>
+                                    <div style={css.statusDot} />
+                                    {myName} (You)
+                                </div>
+                            </>
                         ) : (
-                            <div style={css.mainPlaceholder}>
-                                <Avatar name={myName} size={120} />
-                                <p style={css.placeholderText}>
-                                    {mediaError || "Your camera is off"}
-                                </p>
-                            </div>
+                            <>
+                                <div style={css.mainPlaceholder}>
+                                    <Avatar name={myName} size={120} />
+                                    <p style={css.placeholderText}>
+                                        {mediaError || "Your camera is off"}
+                                    </p>
+                                </div>
+                                <div style={css.mainLabel}>
+                                    <div style={css.statusDot} />
+                                    {myName} (You)
+                                </div>
+                            </>
                         )}
-                        <div style={css.mainLabel}>
-                            <div style={css.statusDot} />
-                            {remoteStream ? (remoteUserName || "Participant") : `${myName} (You)`}
-                        </div>
                     </div>
 
                     <footer style={css.controlPill}>
@@ -638,7 +710,7 @@ const MeetingRoom = () => {
                             )}
                             {messages.map((msg, i) => {
                                 const isOwn = msg.senderId === socket.id;
-                                const sender = msg.sender || remoteUserName || "Participant";
+                                const sender = msg.sender || "Participant";
                                 return (
                                     <div key={i} style={{ ...css.msgGroup, alignItems: isOwn ? "flex-end" : "flex-start" }}>
                                         {!isOwn && <div style={css.msgSender}>{sender}</div>}
